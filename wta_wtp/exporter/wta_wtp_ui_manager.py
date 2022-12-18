@@ -118,7 +118,7 @@ def handleAutoSetTextureWarnings(operatorSelf, warnings: List[str]):
     print("\n".join(warnings))
 
 def isTextureTypeSupported(textureType: str) -> bool:
-    for supportedTex in ['g_AlbedoMap', 'g_MaskMap', 'g_NormalMap', 'g_EnvMap', 'g_DetailNormalMap', 'g_IrradianceMap', 'g_CurvatureMap', 'g_SpreadPatternMap', 'g_LUT', 'g_LightMap', 'g_GradationMap', 'g_ParallaxMap']:
+    for supportedTex in ['g_AlbedoMap', 'g_ColorMask', 'g_MaskMap', 'g_NormalMap', 'g_EnvMap', 'g_DetailNormalMap', 'g_IrradianceMap', 'g_CurvatureMap', 'g_SpreadPatternMap', 'g_LUT', 'g_LightMap', 'g_GradationMap', 'g_ParallaxMap']:
         if supportedTex in textureType:
             return True
     return False
@@ -218,7 +218,7 @@ class AssignBulkTextures(bpy.types.Operator, ImportHelper):
         directory = os.path.dirname(self.filepath)
         for filename in os.listdir(directory):
             for item in context.scene.WTAMaterials:
-                if item.texture_identifier == filename[:-4] and filename[-4:] == '.dds':
+                if item.texture_identifier.upper() == filename[:-4] and (filename[-4:] == '.dds' or filename[-4:] == '.png'):
                     item.texture_path = directory + '/' + filename
                     # Keep track of what was assigned, without duplicates.
                     if filename not in assigned_textures:
@@ -283,8 +283,8 @@ class ExportWTAOperator(bpy.types.Operator, ExportHelper):
     filter_glob: StringProperty(default="*.wta", options={'HIDDEN'})
 
     def execute(self, context):
-        from . import export_wta
-        export_wta.main(context, self.filepath)
+        from . import export_wta_wtp
+        export_wta_wtp.main(context, self.filepath)
         return{'FINISHED'}
 
 class FilepathSelector(bpy.types.Operator, ImportHelper):
@@ -294,7 +294,7 @@ class FilepathSelector(bpy.types.Operator, ImportHelper):
     bl_options = {"UNDO"}
 
     filename_ext = ".dds"
-    filter_glob: StringProperty(default="*.dds", options={'HIDDEN'})
+    filter_glob: StringProperty(default="*.dds,*.png", options={'HIDDEN'})
 
     id : bpy.props.IntProperty(options={'HIDDEN'})
 
@@ -599,7 +599,7 @@ class WTA_WTP_PT_Hints(bpy.types.Panel):
         row = box.row()
         row.label(text='- Texture identifier has to be 8 HEX characters long.')
         row = box.row()
-        row.label(text='- Textures have to be in DDS format (DXT1, DXT3, DXT5).')
+        row.label(text='- Textures have to be in DDS format (DXT1, DXT3, DXT5) for NieR, or PNG (converting to ASTC) for Switch games.')
         row = box.row()
         row.label(text='- It is recommended to "Sync Identifiers in Materials" before WMB export.')
 
