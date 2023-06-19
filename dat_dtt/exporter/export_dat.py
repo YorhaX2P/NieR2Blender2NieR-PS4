@@ -49,6 +49,10 @@ def main(export_filepath, file_list, exportingForGame):
     # ASTRAL CHAIN's DTT files start at 0x8000 bytes.
     if exportingForGame == "ASTRALCHAIN" and ".dtt" in export_filepath:
         currentOffset = (math.ceil(currentOffset / 0x8000)) * 0x8000
+    
+    # NieR Switch's DTT files start at intervals of 0x200.
+    if exportingForGame == "NIERSWITCH":
+        currentOffset = (math.ceil(currentOffset / 0x200)) * 0x200
 
     for fp in files:
         currentOffset = (math.ceil(currentOffset / 16)) * 16

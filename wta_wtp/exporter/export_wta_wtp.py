@@ -2,7 +2,7 @@ import subprocess
 import asyncio
 import math
 import json
-from ...utils.ioUtils import read_int32, write_Int32
+from ...utils.ioUtils import read_int32, write_Int32, write_uInt16, write_float16
 from . import generate_wta_wtp_data
 from .wta_wtp_utils import *
 from ..tegrax1swizzle import compressImageData, getFormatByIndex
@@ -171,6 +171,179 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
             wta_fp.write(to_bytes(textureInfoArray[(i*5)+3]))
             wta_fp.write(to_bytes(textureInfoArray[(i*5)+4]))
         wta_fp.write(padding)
+    
+    elif exportingForGame == "NIERSWITCH":
+        # NIER SWITCH
+        
+        # Change offsets
+        textureSizeArrayOffset = math.ceil((textureOffsetArrayOffset + (textureCount * 4)) / 0x20) * 0x20
+        unknownArrayOffset1 = math.ceil((textureSizeArrayOffset + (textureCount * 4)) / 0x20) * 0x20
+        textureIdentifierArrayOffset = math.ceil((unknownArrayOffset1 + (textureCount * 4)) / 0x20) * 0x20
+        textureInfoArrayOffset = math.ceil((textureIdentifierArrayOffset + (textureCount * 4)) / 0x20) * 0x20
+
+        # Encode all PNG files to ASTC (asynchronously for speed)
+        tasks = []
+        for i in range(textureCount):
+            if ".png" in texture_paths_array[i].lower():
+                textureFormat = "ASTC_6x6_UNORM"
+                if identifiers_array[i].upper() in metadata.keys():
+                    textureFormat = getFormatByIndex(metadata[identifiers_array[i].upper()]["format"])
+                tasks.append(asyncio.ensure_future(encode_astc(texture_paths_array[i], textureFormat)))
+        
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(asyncio.gather(*tasks))
+
+        # Open every DDS texture
+        for i in range(textureCount):
+            path = texture_paths_array[i].replace(".png", ".astc")
+
+            #wtaTextureIdentifier
+            wtaTextureIdentifier[i] = identifiers_array[i]
+            wtaTextureOffset[i] = wtp_fp.tell()
+
+            # Default infos
+            info = {
+                "magic": b".tex",
+                "format": 0x7D,
+                "unk1": 1,
+                "width": 0,
+                "height": 0,
+                "depth": 1,
+                "mipCount": 1,
+                "unk2": 256,
+                "unk3": 0.25,
+                "unk4": 0,
+                # guesses used for swizzling (wtpImportOperator.py)
+                "type": 1,
+                "textureLayout": [4, 0],
+                "arrayCount": 1
+            }
+
+            if ".dds" in path.lower():
+                dds_fp = open(path, 'rb')
+                dds_paddedSize = os.stat(texture_paths_array[i]).st_size
+
+                dds_fp.seek(12)
+                info["width"] = int.from_bytes(dds_fp.read(4), "little")
+                info["height"] = int.from_bytes(dds_fp.read(4), "little")
+
+                #checks dds dxt and cube map info
+                dds_fp.seek(84)
+                dxt = dds_fp.read(4)
+                dds_fp.seek(112)
+                cube = dds_fp.read(4)
+
+
+                # DXT checking
+                if info["format"] == 0x7D: # If not prefilled
+                    if dxt == b'DXT1':
+                        info["format"] = 0x46 # BC1_UNORM_SRGB
+                    elif dxt == b'DXT3':
+                        info["format"] = 0x47 # BC2_UNORM_SRGB
+                    elif dxt == b'DXT5':
+                        info["format"] = 0x48 # BC3_UNORM_SRGB
+                    else:
+                        info["format"] = 0x50 # BC6H_UF16
+
+                #unknownArray1
+                unknownArray1[i] = 1677721632 # DDS textures are always SRGB
+                wtaTextureOffset[i] = wtp_fp.tell()
+
+                dds_fp.seek(80)
+                blockHeightLog2 = info["textureLayout"][0] & 7
+                wtp_fp.write(compressImageData(
+                    getFormatByIndex(info['format']),
+                    info['width'],
+                    info['height'],
+                    info['depth'],
+                    info['arrayCount'],
+                    info['mipCount'],
+                    dds_fp.read(),
+                    blockHeightLog2
+                ))
+                wtaTextureSize[i] = wtp_fp.tell() - wtaTextureOffset[i]
+                if wtaTextureSize[i] < 90112:
+                    wtaTextureSize[i] = 90112
+                    while wtp_fp.tell() < (wtaTextureSize[i] + wtaTextureOffset[i]):
+                        wtp_fp.write(b'\x00')
+                info['imageSize'] = wtaTextureSize[i]
+                
+                dds_fp.close()
+            else:
+                # ASTC
+                astc_fp = open(path, 'rb')
+                astc_fp.seek(7)
+                info["width"] = int.from_bytes(astc_fp.read(3), "little")
+                info["height"] = int.from_bytes(astc_fp.read(3), "little")
+                
+                astc_fp.seek(16)
+                blockHeightLog2 = info["textureLayout"][0] & 7
+                wtp_fp.write(compressImageData(
+                    getFormatByIndex(info['format']),
+                    info['width'],
+                    info['height'],
+                    info['depth'],
+                    info['arrayCount'],
+                    info['mipCount'],
+                    astc_fp.read(),
+                    blockHeightLog2
+                ))
+                wtaTextureSize[i] = wtp_fp.tell() - wtaTextureOffset[i]
+                if wtaTextureSize[i] < 90112:
+                    wtaTextureSize[i] = 90112
+                    while wtp_fp.tell() < (wtaTextureSize[i] + wtaTextureOffset[i]):
+                        wtp_fp.write(b'\x00')
+                info['imageSize'] = wtaTextureSize[i]
+                
+                if "SRGB" in getFormatByIndex(info["format"]):
+                    unknownArray1[i] = (1677721632)
+                else:
+                    unknownArray1[i] = (1610612768)
+                
+                astc_fp.close()
+                # Remove the temporary ASTC file
+                os.remove(path)
+
+            # MipCount needs to be set to 1 -- TODO: find what's causing this
+            #info["mipCount"] = int(math.log2(max(info["width"], info["height"]))) + 1
+            textureInfoArray.append(info)
+            wtp_fp.seek(math.ceil(wtp_fp.tell() / 16) * 16)
+
+        # Write everything
+        wta_fp.write(b'WTB\x00')
+        wta_fp.write(to_bytes(unknown04))
+        wta_fp.write(to_bytes(textureCount))
+        wta_fp.write(to_bytes(textureOffsetArrayOffset))
+        wta_fp.write(to_bytes(textureSizeArrayOffset))
+        wta_fp.write(to_bytes(unknownArrayOffset1))
+        wta_fp.write(to_bytes(textureIdentifierArrayOffset))
+        wta_fp.write(to_bytes(textureInfoArrayOffset))
+        for i in range(textureCount):
+            wta_fp.write(to_bytes(wtaTextureOffset[i]))
+        wta_fp.seek(textureSizeArrayOffset)
+        for i in range(textureCount):
+            wta_fp.write(to_bytes(wtaTextureSize[i]))
+        wta_fp.seek(unknownArrayOffset1)
+        for i in range(textureCount):
+            wta_fp.write(to_bytes(unknownArray1[i]))
+        wta_fp.seek(textureIdentifierArrayOffset)
+        for i in range(textureCount):
+            wta_fp.write(to_bytes(wtaTextureIdentifier[i]))
+        
+        for i in range(textureCount):
+            wta_fp.seek(textureInfoArrayOffset + i * 0x100)
+            wta_fp.write(textureInfoArray[i]["magic"])
+            write_Int32(wta_fp, textureInfoArray[i]["format"])
+            write_Int32(wta_fp, 1)
+            write_Int32(wta_fp, textureInfoArray[i]["width"])
+            write_Int32(wta_fp, textureInfoArray[i]["height"])
+            write_Int32(wta_fp, textureInfoArray[i]["depth"])
+            write_Int32(wta_fp, textureInfoArray[i]["mipCount"])
+            write_Int32(wta_fp, textureInfoArray[i]["unk2"])
+            write_float16(wta_fp, textureInfoArray[i]["unk3"])
+            write_uInt16(wta_fp, textureInfoArray[i]["unk4"])
+        while wta_fp.tell() % 16 != 0:
+            wta_fp.write(b'\x00')
     
     elif exportingForGame == "ASTRALCHAIN":
         # ASTRAL CHAIN

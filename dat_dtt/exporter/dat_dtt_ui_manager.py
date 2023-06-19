@@ -65,7 +65,8 @@ class ExportAllSteps(bpy.types.PropertyGroup):
         default = "NIER",
         items = [
             ("NIER", "NieR: Automata", "Exports for NieR (WTA: DDS only).", 1),
-            ("ASTRALCHAIN", "Astral Chain", "Exports for Astral Chain (WTA: DDS/ASTC)", 2)
+            ("NIERSWITCH", "NieR: Automata (Switch)", "Exports for NieR on Nintendo Switch (WTA: DDS/ASTC)", 2),
+            ("ASTRALCHAIN", "Astral Chain", "Exports for Astral Chain (WTA: DDS/ASTC)", 3)
         ]
     )
 
