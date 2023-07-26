@@ -249,7 +249,7 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
                 unknownArray1[i] = 1677721632 # DDS textures are always SRGB
                 wtaTextureOffset[i] = wtp_fp.tell()
 
-                dds_fp.seek(80)
+                dds_fp.seek(0x80)
                 blockHeightLog2 = info["textureLayout"][0] & 7
                 wtp_fp.write(compressImageData(
                     getFormatByIndex(info['format']),
