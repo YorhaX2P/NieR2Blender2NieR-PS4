@@ -345,3 +345,23 @@ def saveDatInfo(filepath: str, files: List[str], filename: str):
             "ext": ext[1:]
         }
         json.dump(jsonFiles, f, indent=4)
+
+def resolveTextureDir(wmb_dir, wmbname):
+    texture_dir_dat = wmb_dir.replace(wmbname, "textures").replace(".dtt", ".dat")
+    texture_dir_dtt = wmb_dir.replace(wmbname, "textures").replace(".dat", ".dtt")
+    if os.path.exists(texture_dir_dat):
+        return texture_dir_dat
+    elif os.path.exists(texture_dir_dtt):
+        return texture_dir_dtt
+    else:
+        return ""
+
+def resolveTexturePaths(texture_dir, textureID):
+    dds_path = "%s/%s.dds" % (texture_dir, textureID)
+    png_path = "%s/%s.png" % (texture_dir, textureID)
+    if os.path.exists(dds_path):
+        return dds_path
+    elif os.path.exists(png_path):
+        return png_path
+    else:
+        return "" 

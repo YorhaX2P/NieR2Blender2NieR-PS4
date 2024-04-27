@@ -1,6 +1,7 @@
 import os
 import time
 import json
+from ...wta_wtp.exporter import export_wta_wtp
 
 import bpy
 from bpy.props import StringProperty
@@ -16,12 +17,8 @@ class ExportAllSteps(bpy.types.PropertyGroup):
         name = "Export WMB",
         default = True
     )
-    useWtpStep: bpy.props.BoolProperty(
-        name = "Export WTP",
-        default = True
-    )
-    useWtaStep: bpy.props.BoolProperty(
-        name = "Export WTA",
+    useWtaWtpStep: bpy.props.BoolProperty(
+        name = "Export WTA + WTP",
         default = True
     )
     useColStep: bpy.props.BoolProperty(
@@ -61,6 +58,16 @@ class ExportAllSteps(bpy.types.PropertyGroup):
     deleteLoose: bpy.props.BoolProperty(
         name = "Delete Loose Geometry",
         default = True
+    )
+
+    exportingForGame: bpy.props.EnumProperty(
+        name = "Export For Game",
+        default = "NIER",
+        items = [
+            ("NIER", "NieR: Automata", "Exports for NieR (WTA: DDS only).", 1),
+            ("NIERSWITCH", "NieR: Automata (Switch)", "Exports for NieR on Nintendo Switch (WTA: DDS/ASTC)", 2),
+            ("ASTRALCHAIN", "Astral Chain", "Exports for Astral Chain (WTA: DDS/ASTC)", 3)
+        ]
     )
 
 class DAT_DTT_PT_Export(bpy.types.Panel):
@@ -148,8 +155,7 @@ class DAT_DTT_PT_Export(bpy.types.Panel):
         row = box.row(align=True)
         row.scale_y = 1.125
         row.prop(context.scene.ExportAllSteps, "useWmbStep", text="WMB", icon="PANEL_CLOSE" if context.scene.ExportAllSteps.useWmbStep else "ADD")
-        row.prop(context.scene.ExportAllSteps, "useWtpStep", text="WTP", icon="PANEL_CLOSE" if context.scene.ExportAllSteps.useWtpStep else "ADD")
-        row.prop(context.scene.ExportAllSteps, "useWtaStep", text="WTA", icon="PANEL_CLOSE" if context.scene.ExportAllSteps.useWtaStep else "ADD")
+        row.prop(context.scene.ExportAllSteps, "useWtaWtpStep", text="WTA + WTP", icon="PANEL_CLOSE" if context.scene.ExportAllSteps.useWtaWtpStep else "ADD")
         row = box.row(align=True)
         row.scale_y = 1.125
         secondRowItemCount = 0
@@ -174,6 +180,10 @@ class DAT_DTT_PT_Export(bpy.types.Panel):
         row.prop(context.scene.ExportAllSteps, "triangulateMeshes", text="Triangulate", icon="MOD_TRIANGULATE")
         row.prop(context.scene.ExportAllSteps, "centerOrigins", text="Center Origins", icon="OBJECT_ORIGIN")
         row.prop(context.scene.ExportAllSteps, "deleteLoose", text="Delete Loose", icon="SNAP_VERTEX")
+
+        row = box.row(align=True)
+        box = row.box()
+        box.prop(context.scene.ExportAllSteps, "exportingForGame", text="Export for")
 
         layout.separator()
 
@@ -243,7 +253,9 @@ class ExportAll(bpy.types.Operator):
             sarColl = bpy.data.objects["Field-Root"].users_collection[0]
 
         for item in context.scene.DatContents:
-            if item.filepath.endswith('.wta'):
+            if item.filepath.endswith('.wmb'):
+                wmbFilePath = item.filepath
+            elif item.filepath.endswith('.wta'):
                 wtaFilePath = item.filepath
             elif item.filepath.endswith('.col'):
                 colFilePath = item.filepath
@@ -276,15 +288,11 @@ class ExportAll(bpy.types.Operator):
                 bpy.ops.b2n.deleteloosegeometryall()
             wmb_exporter.main(wmbFilePath)
             exportedFilesCount += 1
-        from ...wta_wtp.exporter import export_wta, export_wtp
-        if exportSteps.useWtaStep:
-            print("Exporting WTA")
-            export_wta.main(context, wtaFilePath)
-            exportedFilesCount += 1
-        if exportSteps.useWtpStep:
-            print("Exporting WTP")
-            export_wtp.main(context, wtpFilePath)
-            exportedFilesCount += 1
+        from ...wta_wtp.exporter import export_wta_wtp
+        if exportSteps.useWtaWtpStep:
+            print("Exporting WTA/WTP")
+            export_wta_wtp.main(context, wtaFilePath, wtpFilePath, exportSteps.exportingForGame)
+            exportedFilesCount += 2
         from ...col.exporter import col_exporter
         if exportSteps.useColStep:
             print("Exporting COL")
@@ -326,7 +334,7 @@ class ExportAll(bpy.types.Operator):
             fileNames = [os.path.basename(file_path) for file_path in file_list]
             saveDatInfo(datInfoFilePath, fileNames, datFileName)
             # export dtt
-            export_dat.main(datFilePath, file_list)
+            export_dat.main(datFilePath, file_list, exportSteps.exportingForGame)
             exportedFilesCount += 1
         if exportSteps.useDttStep:
             if len(context.scene.DttContents) == 0:
@@ -342,7 +350,7 @@ class ExportAll(bpy.types.Operator):
             fileNames = [os.path.basename(file_path) for file_path in file_list]
             saveDatInfo(datInfoFilePath, fileNames, dttFileName)
             # export dtt
-            export_dat.main(dttFilePath, file_list)
+            export_dat.main(dttFilePath, file_list, exportSteps.exportingForGame)
             exportedFilesCount += 1
 
         tDiff = int(time.time() - t1)

@@ -2,7 +2,13 @@ import os
 import bpy
 from bpy.props import StringProperty
 from bpy_extras.io_utils import ImportHelper
+from struct import pack
+import subprocess
+import asyncio
+import json
 from ...utils import ioUtils as io
+from ..tegrax1swizzle import getFormatByIndex, getFormatTable, loadImageData
+
 
 class WTAData:
     def __init__(self, f, wtpFile) -> None:
@@ -41,14 +47,54 @@ class WTAData:
             self.idx.append(io.read_uint32(f))
 
         # Texture Info
-        """
+        f.seek(self.offsetTextureInfo)
         self.infos = []
-        for i in range(self.num_files):
-            info = []
-            info.append(io.read_uint32(f))
-            info.append([io.read_uint32(f) for x in range(4)])
-            self.infos.append(info)
-        """
+
+        infoFormat = f.read(4)
+        if infoFormat == b'XT1\x00': # Astral Chain, Bayonetta 3 WTA format 
+            self.type = "XT1"
+            f.seek(f.tell() - 4)
+            for i in range(self.num_files):
+                info = {
+                    "magic": f.read(4),
+                    "unk1": io.read_uint32(f),
+                    "imageSize": io.read_uint64(f),
+                    "headerSize": io.read_uint32(f),
+                    "mipCount": io.read_uint32(f),
+                    "type": io.read_uint32(f),
+                    "format": io.read_uint32(f),
+                    "width": io.read_uint32(f),
+                    "height": io.read_uint32(f),
+                    "depth": io.read_uint32(f),
+                    "unk4": io.read_uint32(f),
+                    "textureLayout": [io.read_uint32(f), io.read_uint32(f)],
+                    "arrayCount": 1
+                }
+                if info["type"] == 3 or info["type"] == 8: # T_Cube or T_Cube_Array
+                    info["arrayCount"] = 6
+                self.infos.append(info)
+        elif infoFormat == b'.tex': # NieR Switch WTA format
+            self.type = "TEX"
+            for i in range(self.num_files):
+                f.seek(self.offsetTextureInfo + i * 0x100)
+                info = {
+                    "magic": f.read(4),
+                    "format": io.read_uint32(f),
+                    "unk1": io.read_uint32(f),
+                    "width": io.read_uint32(f),
+                    "height": io.read_uint32(f),
+                    "depth": io.read_uint32(f),
+                    "mipCount": io.read_uint32(f),
+                    "unk2": io.read_uint32(f),
+                    "unk3": io.read_float16(f),
+                    "unk4": io.read_uint16(f),
+                    "type": 1,
+                    "textureLayout": [4, 0],
+                    "arrayCount": 1
+                }
+                self.infos.append(info)
+        else:
+            self.type = "PC"
 
         self.data = wtpFile.read()
 
@@ -58,12 +104,131 @@ class WTAData:
         count = 0
         fileName = os.path.basename(self.wtaPath)
         dir = os.path.dirname(self.wtaPath)
-        for i in range(self.num_files):
-            os.makedirs(extractionDir, exist_ok=True)
-            with open(os.path.join(extractionDir, f"{self.idx[i]:0>8X}.dds"), "wb") as f:
-                f.write(self.data[self.offsets[i]:self.offsets[i]+self.sizes[i]])
-            count += 1
+
+        if self.type == "PC":
+            for i in range(self.num_files):
+                os.makedirs(extractionDir, exist_ok=True)
+                with open(os.path.join(extractionDir, f"{self.idx[i]:0>8X}.dds"), "wb") as f:
+                    f.write(self.data[self.offsets[i]:self.offsets[i]+self.sizes[i]])
+                count += 1
+        else:
+            # Switch games must construct the DDS/ASTC headers manually.
+            tasks = []
+            for i in range(self.num_files):
+                os.makedirs(extractionDir, exist_ok=True)
+                # Unswizzle
+                textureFormat = getFormatByIndex(self.infos[i]["format"])
+                blockHeightLog2 = self.infos[i]["textureLayout"][0] & 7
+                texture = loadImageData(
+                    textureFormat,
+                    self.infos[i]['width'],
+                    self.infos[i]['height'],
+                    self.infos[i]['depth'],
+                    self.infos[i]['arrayCount'],
+                    self.infos[i]['mipCount'],
+                    self.data[self.offsets[i]:self.offsets[i]+self.sizes[i]],
+                    blockHeightLog2
+                    )
+
+                # Construct headers
+                if "ASTC" in textureFormat:
+                    # ASTC
+                    formatInfo = getFormatTable(textureFormat)
+                    with open(os.path.join(extractionDir, f"{self.idx[i]:0>8X}.astc"), "wb") as f:
+                        f.write(b''.join([
+                            b'\x13\xAB\xA1\x5C', formatInfo[1].to_bytes(1, "little"),
+                            formatInfo[2].to_bytes(1, "little"), b'\1',
+                            self.infos[i]['width'].to_bytes(3, "little"),
+                            self.infos[i]['height'].to_bytes(3, "little"), b'\1\0\0',
+                            texture,
+                        ]))
+                    
+                    tasks.append(asyncio.ensure_future(decode_astc(os.path.join(extractionDir, f"{self.idx[i]:0>8X}.astc"))))
+                else:
+                    # DDS
+                    headerDataObject = DDSHeader(textureFormat, self.infos[i]['width'], self.infos[i]['height'], self.infos[i]['depth'])
+                    with open(os.path.join(extractionDir, f"{self.idx[i]:0>8X}.dds"), "wb") as f:
+                        f.write(headerDataObject.save())
+                        f.write(texture)
+                
+                count += 1
+            
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(asyncio.gather(*tasks))
+
+            # Write metadata file (need to store format and textureLayout for later)
+            metadata = {}
+            for i in range(self.num_files):
+                metadata[f"{self.idx[i]:0>8X}"] = {
+                    "type": self.infos[i]["type"],
+                    "format": self.infos[i]["format"],
+                    "textureLayout": self.infos[i]["textureLayout"]
+                }
+            with open(os.path.join(extractionDir, "xt1_info.json"), "w") as f:
+                f.write(json.dumps(metadata, indent=4))
+
         return count
+
+# Asynchronously decodes an ASTC file to PNG.
+async def decode_astc(filePath):
+    script_file = os.path.realpath(__file__)
+    directory = os.path.dirname(script_file).replace("importer", "")
+    appPath = os.path.join(directory, "astcenc-avx2.exe")
+    result = subprocess.run([appPath, "-ds", filePath, filePath.replace('.astc', '.png')], cwd=directory)
+    os.remove(filePath)
+
+# WAY too lazy to reimplement this; remind me later i guess?
+class DDSHeader(object):
+    # https://docs.microsoft.com/en-us/windows/win32/direct3ddds/dds-header
+    class DDSPixelFormat(object):
+        def __init__(self, textureFormat):
+            self.size = 32
+            self.flags = 4 # contains fourcc
+            if textureFormat == "BC6H_UF16":
+                self.fourCC = b'DX10'
+            elif textureFormat.startswith("BC1"):
+                self.fourCC = b'DXT1'
+            elif textureFormat.startswith("BC2"):
+                self.fourCC = b'DXT3'
+            else:
+                self.fourCC = b'DXT5'
+            # BC1 = DXT1, BC2 = DXT3, above is DXT5 i think; BC6H is the only DX10 format
+            self.RGBBitCount = 0
+            self.RBitMask = 0x00000000
+            self.GBitMask = 0x00000000
+            self.BBitMask = 0x00000000
+            self.ABitMask = 0x00000000
+
+    def __init__(self, textureFormat, width, height, depth):
+        self.magic = b'DDS\x20'
+        self.size = 124
+        self.flags = 0x1 + 0x2 + 0x4 + 0x1000 + 0x20000 + 0x80000 # Defaults (caps, height, width, pixelformat) + mipmapcount and linearsize
+        self.height = height
+        self.width = width
+        self.format = textureFormat
+        if self.format == "R8G8B8A8_UNORM":
+            self.pitchOrLinearSize = ((self.width + 1) >> 1) * 4
+        else:
+            self.pitchOrLinearSize = int(max(1, ((self.width+3)/4) ) * getFormatTable(self.format)[0]) # https://docs.microsoft.com/en-us/windows/win32/direct3ddds/dx-graphics-dds-pguide
+        self.depth = depth
+        self.mipmapCount = 1#texture.mipCount # Setting this to the normal value breaks everything, don't do that
+        self.reserved1 = [0x00000000] * 11
+        self.ddspf = self.DDSPixelFormat(textureFormat)
+        self.caps = 4198408 # Defaults (DDSCAPS_TEXTURE) + mipmap and complex
+        self.caps2 = 0 
+        self.caps3 = 0
+        self.caps4 = 0
+        self.reserved2 = 0
+
+    def save(self):
+        output = self.magic + pack("20I4s10I", self.size, self.flags, self.height, self.width, self.pitchOrLinearSize, self.depth,
+            self.mipmapCount, self.reserved1[0], self.reserved1[1], self.reserved1[2], self.reserved1[3], self.reserved1[4],
+            self.reserved1[5], self.reserved1[6], self.reserved1[7], self.reserved1[8], self.reserved1[9], self.reserved1[10],
+            self.ddspf.size, self.ddspf.flags, self.ddspf.fourCC, self.ddspf.RGBBitCount, self.ddspf.RBitMask, self.ddspf.GBitMask,
+            self.ddspf.BBitMask, self.ddspf.ABitMask, self.caps, self.caps2, self.caps3, self.caps4, self.reserved2)
+        if self.format == "BC6H_UF16":
+            output += bytearray(b"\x5F\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00")
+        return output
 
 class ExtractNierWtaWtp(bpy.types.Operator, ImportHelper):
     '''Extract textures from WTA/WTP files'''

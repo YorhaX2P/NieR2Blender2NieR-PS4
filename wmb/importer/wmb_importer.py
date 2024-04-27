@@ -5,7 +5,7 @@ import math
 from typing import List, Tuple
 from mathutils import Vector
 
-from ...utils.util import ShowMessageBox, getPreferences, printTimings
+from ...utils.util import ShowMessageBox, getPreferences, printTimings, resolveTexturePaths, resolveTextureDir
 from .wmb import *
 from ...wta_wtp.exporter.wta_wtp_ui_manager import isTextureTypeSupported, makeWtaMaterial
 
@@ -180,7 +180,7 @@ def addWtaExportMaterial(texture_dir, material):
 	material_name = material[0]
 	textures = material[1]
 	wtaTextures: List[Tuple[str, str, str]] = [
-		(mapType, id, os.path.join(texture_dir, f"{id}.dds"))
+		(mapType, id, resolveTexturePaths(texture_dir, id))
 		for mapType, id in textures.items()
 		if isTextureTypeSupported(mapType)
 	]
@@ -245,7 +245,7 @@ def construct_materials(texture_dir, material):
 	for texturesType in textures.keys():
 		textures_type = texturesType.lower()
 		material[texturesType] = textures.get(texturesType)
-		texture_file = "%s/%s.dds" % (texture_dir, textures[texturesType])
+		texture_file = resolveTexturePaths(texture_dir, textures[texturesType])
 		if os.path.exists(texture_file):
 			if textures_type.find('albedo') > -1:
 				albedo_maps[textures_type] = textures.get(texturesType)
@@ -258,9 +258,10 @@ def construct_materials(texture_dir, material):
 
 	# Albedo Nodes
 	albedo_nodes = []
+	albedo_uv_nodes = []
 	albedo_mixRGB_nodes = []
 	for i, textureID in enumerate(albedo_maps.values()):
-		texture_file = "%s/%s.dds" % (texture_dir, textureID)
+		texture_file = resolveTexturePaths(texture_dir, textureID)
 		if os.path.exists(texture_file):
 			albedo_image = nodes.new(type='ShaderNodeTexImage')
 			albedo_nodes.append(albedo_image)
@@ -277,6 +278,12 @@ def construct_materials(texture_dir, material):
 				albedo_mixRGB_nodes.append(mixRGB_shader)
 				mixRGB_shader.location = 300,(i-1)*-60
 				mixRGB_shader.hide = True
+				# UV map node for other textures
+				uv_shader = nodes.new(type='ShaderNodeUVMap')
+				albedo_uv_nodes.append(uv_shader)
+				uv_shader.uv_map = f"UVMap{i+1}"
+				uv_shader.location = -300,i*-60
+				uv_shader.hide = True
 	# Albedo Links
 	if len(albedo_nodes) == 1:
 		albedo_principled = links.new(albedo_nodes[0].outputs['Color'], principled.inputs['Base Color'])
@@ -287,8 +294,12 @@ def construct_materials(texture_dir, material):
 			for i in range(len(albedo_mixRGB_nodes)):
 				albedo_link = links.new(albedo_nodes[i+1].outputs['Color'], albedo_mixRGB_nodes[i].inputs['Color1'])
 				alpha_link = links.new(albedo_nodes[i].outputs['Alpha'], albedo_mixRGB_nodes[i].inputs['Fac'])
+				# UV is [usually] different for other AlbedoMaps
+				uv_link = links.new(albedo_uv_nodes[i].outputs['UV'], albedo_nodes[i+1].inputs['Vector'])
 				if i > 0:
 					mixRGB_link = links.new(albedo_mixRGB_nodes[i-1].outputs['Color'], albedo_mixRGB_nodes[i].inputs['Color2'])
+			# Preserve Alpha for last texture (ASTRAL CHAIN Harmony Square signage?)
+			links.new(albedo_nodes[-1].outputs['Alpha'], principled.inputs['Alpha'])
 			mixRGB_link = links.new(albedo_mixRGB_nodes[-1].outputs['Color'], principled.inputs['Base Color'])
 
 	# Mask Nodes
@@ -297,7 +308,7 @@ def construct_materials(texture_dir, material):
 	mask_sepRGB_nodes = []
 	mask_invert_nodes = []
 	for i, textureID in enumerate(mask_maps.values()):
-		texture_file = "%s/%s.dds" % (texture_dir, textureID)
+		texture_file = resolveTexturePaths(texture_dir, textureID)
 		if os.path.exists(texture_file):
 			mask_image = nodes.new(type='ShaderNodeTexImage')
 			mask_nodes.append(mask_image)
@@ -334,7 +345,7 @@ def construct_materials(texture_dir, material):
 	normal_nodes = []
 	normal_mixRGB_nodes = []
 	for i, textureID in enumerate(normal_maps.values()):
-		texture_file = "%s/%s.dds" % (texture_dir, textureID)
+		texture_file = resolveTexturePaths(texture_dir, textureID)
 		if os.path.exists(texture_file):
 			normal_image = nodes.new(type='ShaderNodeTexImage')
 			normal_nodes.append(normal_image)
@@ -374,7 +385,7 @@ def construct_materials(texture_dir, material):
 	curvature_sepRGB_nodes = []
 	curvature_mul_nodes = []
 	for i, textureID in enumerate(curvature_maps.values()):
-		texture_file = "%s/%s.dds" % (texture_dir, textureID)
+		texture_file = resolveTexturePaths(texture_dir, textureID)
 		if os.path.exists(texture_file):
 			curvature_image = nodes.new(type='ShaderNodeTexImage')
 			curvature_nodes.append(curvature_image)
@@ -574,14 +585,14 @@ def get_wmb_material(wmb, texture_dir):
 					try:
 						texture_stream = wmb.wta.getTextureByIdentifier(identifier,wmb.wtp_fp)
 						if texture_stream:
-							if not os.path.exists(os.path.join(texture_dir, identifier + '.dds')):
+							if not os.path.exists(resolveTexturePaths(texture_dir, identifier)):
 								create_dir(texture_dir)
 								texture_fp = open(os.path.join(texture_dir, identifier + '.dds'), "wb")
 								print('[+] could not find DDS texture, trying to find it in WTA; %s.dds'% identifier)
 								texture_fp.write(texture_stream)
 								texture_fp.close()
 							else:
-								print('[+] Found %s.dds'% identifier)
+								print('[+] Found ' + resolveTexturePaths(texture_dir, identifier).split("/")[-1])
 					except:
 						continue
 				materials.append([material_name,textures,uniforms,shader_name,technique_name,parameterGroups])
@@ -592,7 +603,7 @@ def get_wmb_material(wmb, texture_dir):
 				identifier = wmb.wta.wtaTextureIdentifier[textureIndex]
 				texture_stream = wmb.wta.getTextureByIdentifier(identifier,wmb.wtp_fp)
 				if texture_stream:
-					if not os.path.exists(os.path.join(texture_dir, identifier + '.dds')):
+					if not os.path.exists(resolveTexturePaths(texture_dir, identifier)):
 						create_dir(texture_dir)
 						texture_fp = open(os.path.join(texture_dir, identifier + '.dds'), "wb")
 						print('[+] dumping %s.dds'% identifier)
@@ -682,7 +693,7 @@ def main(only_extract = False, wmb_file = os.path.join(os.path.split(os.path.rea
 	wmbCollection.children.link(col)
 	#bpy.context.view_layer.active_layer_collection = bpy.context.view_layer.layer_collection.children[-1]
 	
-	texture_dir = wmb_file.replace(wmbname, 'textures')
+	texture_dir = resolveTextureDir(wmb_file, wmbname)
 	if wmb.hasBone:
 		boneArray = [[bone.boneIndex, "bone%d"%bone.boneIndex, bone.parentIndex,"bone%d"%bone.parentIndex, bone.world_position, bone.world_rotation, bone.boneNumber, bone.local_position, bone.local_rotation, bone.world_rotation, bone.world_position_tpose] for bone in wmb.boneArray]
 		armature_no_wmb = wmbname.replace('.wmb','')

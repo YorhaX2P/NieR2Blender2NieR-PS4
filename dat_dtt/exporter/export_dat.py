@@ -7,7 +7,7 @@ from ...utils.util import *
 def to_string(bs, encoding = 'utf8'):
 	return bs.split(b'\x00')[0].decode(encoding)
 
-def main(export_filepath, file_list):
+def main(export_filepath, file_list, exportingForGame):
     files = file_list
     fileNumber = len(files)
     from .datHashGenerator import generateHashData
@@ -46,10 +46,22 @@ def main(export_filepath, file_list):
     #fileOffsets
     fileOffsets = []
     currentOffset = hashMapOffset + hashMapSize
+    # ASTRAL CHAIN's DTT files start at 0x8000 bytes.
+    if exportingForGame == "ASTRALCHAIN" and ".dtt" in export_filepath:
+        currentOffset = (math.ceil(currentOffset / 0x8000)) * 0x8000
+    
+    # NieR Switch's DTT files start at intervals of 0x200.
+    if exportingForGame == "NIERSWITCH":
+        currentOffset = (math.ceil(currentOffset / 0x200)) * 0x200
+
     for fp in files:
         currentOffset = (math.ceil(currentOffset / 16)) * 16
         fileOffsets.append(currentOffset)
         currentOffset += os.path.getsize(fp)
+
+        # ASTRAL CHAIN's BNK files are padded out to 2048 bytes.
+        if exportingForGame == "ASTRALCHAIN" and ".bnk" in os.path.basename(fp):
+            currentOffset = (math.ceil(currentOffset / 2048)) * 2048
 
     # fileSizes
     fileSizes = []
