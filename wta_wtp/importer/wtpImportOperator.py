@@ -51,7 +51,8 @@ class WTAData:
         self.infos = []
 
         infoFormat = f.read(4)
-        if infoFormat == b'XT1\x00': # Astral Chain, Bayonetta 3 WTA format 
+        if infoFormat == b'XT1\x00':
+            # Astral Chain, Bayonetta 3 WTA format 
             self.type = "XT1"
             f.seek(f.tell() - 4)
             for i in range(self.num_files):
@@ -66,14 +67,20 @@ class WTAData:
                     "width": io.read_uint32(f),
                     "height": io.read_uint32(f),
                     "depth": io.read_uint32(f),
+                    "specialPad": io.read_uint32(f),
+                    "blockHeightLog2": io.read_uint8(f),
+                    "flags": io.read_uint8(f), # 0x4: use specialPad
+                    "unk2": io.read_uint8(f),
+                    "unk3": io.read_uint8(f),
                     "unk4": io.read_uint32(f),
-                    "textureLayout": [io.read_uint32(f), io.read_uint32(f)],
                     "arrayCount": 1
                 }
                 if info["type"] == 3 or info["type"] == 8: # T_Cube or T_Cube_Array
                     info["arrayCount"] = 6
                 self.infos.append(info)
-        elif infoFormat == b'.tex': # NieR Switch WTA format
+        
+        elif infoFormat == b'.tex':
+            # NieR Switch WTA format
             self.type = "TEX"
             for i in range(self.num_files):
                 f.seek(self.offsetTextureInfo + i * 0x100)
@@ -85,13 +92,18 @@ class WTAData:
                     "height": io.read_uint32(f),
                     "depth": io.read_uint32(f),
                     "mipCount": io.read_uint32(f),
-                    "unk2": io.read_uint32(f),
-                    "unk3": io.read_float16(f),
-                    "unk4": io.read_uint16(f),
+                    "headerSize": io.read_uint32(f),
+                    "textureSize": io.read_uint64(f), # identical to the one in the headers
                     "type": 1,
-                    "textureLayout": [4, 0],
+                    "blockHeightLog2": 4,
                     "arrayCount": 1
                 }
+
+                if info["width"] < 256:
+                    info["blockHeightLog2"] = 8 & 7
+                if info["width"] < 128:
+                    info["blockHeightLog2"] = 16 & 7
+
                 self.infos.append(info)
         else:
             self.type = "PC"
@@ -118,7 +130,11 @@ class WTAData:
                 os.makedirs(extractionDir, exist_ok=True)
                 # Unswizzle
                 textureFormat = getFormatByIndex(self.infos[i]["format"])
-                blockHeightLog2 = self.infos[i]["textureLayout"][0] & 7
+                
+                specialPad = 1
+                if "specialPad" in self.infos[i].keys() and "flags" in self.infos[i].keys() and self.infos[i]["flags"] & 0x4:
+                    specialPad = self.infos[i]["specialPad"]
+                
                 texture = loadImageData(
                     textureFormat,
                     self.infos[i]['width'],
@@ -127,7 +143,8 @@ class WTAData:
                     self.infos[i]['arrayCount'],
                     self.infos[i]['mipCount'],
                     self.data[self.offsets[i]:self.offsets[i]+self.sizes[i]],
-                    blockHeightLog2
+                    self.infos[i]["blockHeightLog2"],
+                    specialPad=specialPad
                     )
 
                 # Construct headers
@@ -156,14 +173,24 @@ class WTAData:
             loop = asyncio.get_event_loop()
             loop.run_until_complete(asyncio.gather(*tasks))
 
-            # Write metadata file (need to store format and textureLayout for later)
+            # Write metadata file (need to store format and other data for later)
             metadata = {}
             for i in range(self.num_files):
                 metadata[f"{self.idx[i]:0>8X}"] = {
                     "type": self.infos[i]["type"],
                     "format": self.infos[i]["format"],
-                    "textureLayout": self.infos[i]["textureLayout"]
+                    "blockHeightLog2": self.infos[i]["blockHeightLog2"],
                 }
+
+                if "specialPad" in self.infos[i].keys():
+                    # add AC/B3 specialPad
+                    metadata[f"{self.idx[i]:0>8X}"]["specialPad"] = self.infos[i]["specialPad"]
+                    metadata[f"{self.idx[i]:0>8X}"]["blockHeightLog2"] = self.infos[i]["blockHeightLog2"]
+                    metadata[f"{self.idx[i]:0>8X}"]["flags"] = self.infos[i]["flags"]
+                    metadata[f"{self.idx[i]:0>8X}"]["unk2"] = self.infos[i]["unk2"]
+                    metadata[f"{self.idx[i]:0>8X}"]["unk3"] = self.infos[i]["unk3"]
+                    metadata[f"{self.idx[i]:0>8X}"]["unk4"] = self.infos[i]["unk4"]
+
             with open(os.path.join(extractionDir, "xt1_info.json"), "w") as f:
                 f.write(json.dumps(metadata, indent=4))
 

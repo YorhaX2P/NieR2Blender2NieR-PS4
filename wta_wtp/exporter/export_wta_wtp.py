@@ -2,7 +2,7 @@ import subprocess
 import asyncio
 import math
 import json
-from ...utils.ioUtils import read_int32, write_Int32, write_uInt16, write_float16
+from ...utils.ioUtils import read_int32, write_Int32, write_uInt32, write_byte
 from . import generate_wta_wtp_data
 from .wta_wtp_utils import *
 from ..tegrax1swizzle import compressImageData, getFormatByIndex
@@ -205,17 +205,13 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
             info = {
                 "magic": b".tex",
                 "format": 0x7D,
-                "unk1": 1,
                 "width": 0,
                 "height": 0,
                 "depth": 1,
                 "mipCount": 1,
-                "unk2": 256,
-                "unk3": 0.25,
-                "unk4": 0,
                 # guesses used for swizzling (wtpImportOperator.py)
                 "type": 1,
-                "textureLayout": [4, 0],
+                "blockHeightLog2": 4,
                 "arrayCount": 1
             }
 
@@ -249,8 +245,13 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
                 unknownArray1[i] = 1677721632 # DDS textures are always SRGB
                 wtaTextureOffset[i] = wtp_fp.tell()
 
+                # Change infos
+                if info["height"] < 256:
+                    info["blockHeightLog2"] = 8 & 7
+                if info["height"] < 128:
+                    info["blockHeightLog2"] = 16 & 7
+
                 dds_fp.seek(0x80)
-                blockHeightLog2 = info["textureLayout"][0] & 7
                 wtp_fp.write(compressImageData(
                     getFormatByIndex(info['format']),
                     info['width'],
@@ -259,7 +260,7 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
                     info['arrayCount'],
                     info['mipCount'],
                     dds_fp.read(),
-                    blockHeightLog2
+                    info['blockHeightLog2']
                 ))
                 wtaTextureSize[i] = wtp_fp.tell() - wtaTextureOffset[i]
                 if wtaTextureSize[i] < 90112:
@@ -277,7 +278,6 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
                 info["height"] = int.from_bytes(astc_fp.read(3), "little")
                 
                 astc_fp.seek(16)
-                blockHeightLog2 = info["textureLayout"][0] & 7
                 wtp_fp.write(compressImageData(
                     getFormatByIndex(info['format']),
                     info['width'],
@@ -286,7 +286,7 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
                     info['arrayCount'],
                     info['mipCount'],
                     astc_fp.read(),
-                    blockHeightLog2
+                    info['blockHeightLog2']
                 ))
                 wtaTextureSize[i] = wtp_fp.tell() - wtaTextureOffset[i]
                 if wtaTextureSize[i] < 90112:
@@ -331,17 +331,17 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
             wta_fp.write(to_bytes(wtaTextureIdentifier[i]))
         
         for i in range(textureCount):
+            print("Texture", getFormatByIndex(textureInfoArray[i]["format"]), f"{textureInfoArray[i]['width']}x{textureInfoArray[i]['height']}", textureInfoArray[i]["blockHeightLog2"])
             wta_fp.seek(textureInfoArrayOffset + i * 0x100)
             wta_fp.write(textureInfoArray[i]["magic"])
-            write_Int32(wta_fp, textureInfoArray[i]["format"])
-            write_Int32(wta_fp, 1)
-            write_Int32(wta_fp, textureInfoArray[i]["width"])
-            write_Int32(wta_fp, textureInfoArray[i]["height"])
-            write_Int32(wta_fp, textureInfoArray[i]["depth"])
-            write_Int32(wta_fp, textureInfoArray[i]["mipCount"])
-            write_Int32(wta_fp, textureInfoArray[i]["unk2"])
-            write_float16(wta_fp, textureInfoArray[i]["unk3"])
-            write_uInt16(wta_fp, textureInfoArray[i]["unk4"])
+            write_uInt32(wta_fp, textureInfoArray[i]["format"])
+            write_uInt32(wta_fp, 1) # Texture type (1)
+            write_uInt32(wta_fp, textureInfoArray[i]["width"])
+            write_uInt32(wta_fp, textureInfoArray[i]["height"])
+            write_uInt32(wta_fp, textureInfoArray[i]["depth"])
+            write_uInt32(wta_fp, textureInfoArray[i]["mipCount"])
+            write_uInt32(wta_fp, 256) # header size? (0x100 = 256)
+            write_uInt32(wta_fp, wtaTextureSize[i]) # Texture size? (0x3400 = 13312)
         while wta_fp.tell() % 16 != 0:
             wta_fp.write(b'\x00')
     
@@ -393,15 +393,24 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
                 "width": 0,
                 "height": 0,
                 "depth": 1,
-                "unk4": 32, # Always 32 (?)
-                "textureLayout": [1027, 65543],
+                "specialPad": 32, # Always 32 (?) - special padding
+                "blockHeightLog2": 3,
+                "flags": 4,
+                "unk2": 0,
+                "unk3": 0,
+                "unk4": 65543,
                 "arrayCount": 1
             }
 
             if identifiers_array[i].upper() in metadata.keys():
                 info["type"] = metadata[identifiers_array[i].upper()]["type"]
                 info["format"] = metadata[identifiers_array[i].upper()]["format"]
-                info["textureLayout"] = metadata[identifiers_array[i].upper()]["textureLayout"]
+                info["specialPad"] = metadata[identifiers_array[i].upper()]["specialPad"]
+                info["blockHeightLog2"] = metadata[identifiers_array[i].upper()]["blockHeightLog2"]
+                info["flags"] = metadata[identifiers_array[i].upper()]["flags"]
+                info["unk2"] = metadata[identifiers_array[i].upper()]["unk2"]
+                info["unk3"] = metadata[identifiers_array[i].upper()]["unk3"]
+                info["unk4"] = metadata[identifiers_array[i].upper()]["unk4"]
 
             if ".dds" in path.lower():
                 dds_fp = open(path, 'rb')
@@ -436,7 +445,9 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
                 wtaTextureOffset[i] = wtp_fp.tell()
 
                 dds_fp.seek(80)
-                blockHeightLog2 = info["textureLayout"][0] & 7
+                specialPad = 0
+                if info["flags"] & 0x4:
+                    specialPad = 32
                 wtp_fp.write(compressImageData(
                     getFormatByIndex(info['format']),
                     info['width'],
@@ -445,7 +456,8 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
                     info['arrayCount'],
                     info['mipCount'],
                     dds_fp.read(),
-                    blockHeightLog2
+                    info['blockHeightLog2'],
+                    specialPad=specialPad
                 ))
                 wtaTextureSize[i] = wtp_fp.tell() - wtaTextureOffset[i]
                 if wtaTextureSize[i] < 90112:
@@ -463,7 +475,9 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
                 info["height"] = int.from_bytes(astc_fp.read(3), "little")
                 
                 astc_fp.seek(16)
-                blockHeightLog2 = info["textureLayout"][0] & 7
+                specialPad = 0
+                if info["flags"] & 0x4:
+                    specialPad = 32
                 wtp_fp.write(compressImageData(
                     getFormatByIndex(info['format']),
                     info['width'],
@@ -472,7 +486,8 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
                     info['arrayCount'],
                     info['mipCount'],
                     astc_fp.read(),
-                    blockHeightLog2
+                    info['blockHeightLog2'],
+                    specialPad=specialPad
                 ))
                 wtaTextureSize[i] = wtp_fp.tell() - wtaTextureOffset[i]
                 if wtaTextureSize[i] < 90112:
@@ -528,9 +543,12 @@ def main(context, export_filepath_wta, export_filepath_wtp, exportingForGame):
             write_Int32(wta_fp, textureInfoArray[i]["width"])
             write_Int32(wta_fp, textureInfoArray[i]["height"])
             write_Int32(wta_fp, textureInfoArray[i]["depth"])
+            write_Int32(wta_fp, textureInfoArray[i]["specialPad"])
+            write_byte(wta_fp, textureInfoArray[i]["blockHeightLog2"])
+            write_byte(wta_fp, textureInfoArray[i]["flags"])
+            write_byte(wta_fp, textureInfoArray[i]["unk2"])
+            write_byte(wta_fp, textureInfoArray[i]["unk3"])
             write_Int32(wta_fp, textureInfoArray[i]["unk4"])
-            write_Int32(wta_fp, textureInfoArray[i]["textureLayout"][0])
-            write_Int32(wta_fp, textureInfoArray[i]["textureLayout"][1])
         while wta_fp.tell() % 16 != 0:
             wta_fp.write(b'\x00')
 

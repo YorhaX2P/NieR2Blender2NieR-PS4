@@ -1,8 +1,10 @@
-# TegraX1Swizzle.py - cabalex [Updated Dec 2022]
+# TegraX1Swizzle.py - cabalex [Updated Aug 2024]
 # Based on:
 # KillzXGaming's Switch Toolbox texture decoding - https://github.com/KillzXGaming/Switch-Toolbox/blob/604f7b3d369bc97d9d05632da3211ed11b990ba7/Switch_Toolbox_Library/Texture%20Decoding/Switch/TegraX1Swizzle.cs
 # aboood40091's BNTX-Extractor - https://github.com/aboood40091/BNTX-Extractor/blob/master/swizzle.py
 # [Format table] Ryujinx's image table - https://github.com/Ryujinx/Ryujinx/blob/c86aacde76b5f8e503e2b412385c8491ecc86b3b/Ryujinx.Graphics/Graphics3d/Texture/ImageUtils.cs
+
+# Aug 2024: Added special padding to GOB offsets.
 
 formatTable = {
 	"R8G8B8A8_UNORM": [4, 1, 1, 1],
@@ -76,7 +78,7 @@ def round_up(x, y):
 	return ((x - 1) | (y - 1)) + 1
 
 
-def _swizzle(width, height, depth, blkWidth, blkHeight, blkDepth, roundPitch, bpp, tileMode, blockHeightLog2, data, toSwizzle):
+def _swizzle(width, height, depth, blkWidth, blkHeight, blkDepth, roundPitch, bpp, tileMode, blockHeightLog2, specialPad, data, toSwizzle):
 	block_height = 1 << blockHeightLog2
 
 	width = DIV_ROUND_UP(width, blkWidth)
@@ -102,7 +104,7 @@ def _swizzle(width, height, depth, blkWidth, blkHeight, blkDepth, roundPitch, bp
 				pos = y * pitch + x * bpp
 
 			else:
-				pos = getAddrBlockLinear(x, y, width, bpp, 0, block_height)
+				pos = getAddrBlockLinear(x, y, width, bpp, 0, block_height, specialPad)
 
 			pos_ = (y * width + x) * bpp
 
@@ -116,20 +118,20 @@ def _swizzle(width, height, depth, blkWidth, blkHeight, blkDepth, roundPitch, bp
 	return result[:size]
 
 #def deswizzle(width, height, blkWidth, blkHeight, bpp, tileMode, alignment, size_range, data):
-def deswizzle(width, height, depth, blkWidth, blkHeight, blkDepth, roundPitch, bpp, tileMode, size_range, data):
-	return _swizzle(width, height, depth, blkWidth, blkHeight, blkDepth, roundPitch, bpp, tileMode, size_range, bytes(data), 0)
+def deswizzle(width, height, depth, blkWidth, blkHeight, blkDepth, roundPitch, bpp, tileMode, size_range, specialPad, data):
+	return _swizzle(width, height, depth, blkWidth, blkHeight, blkDepth, roundPitch, bpp, tileMode, size_range, specialPad, bytes(data), 0)
 	#return _swizzle(width, height, blkWidth, blkHeight, bpp, tileMode, alignment, size_range, bytes(data), 0)
 
 
-def swizzle(width, height, depth, blkWidth, blkHeight, blkDepth, roundPitch, bpp, tileMode, size_range, data):
-	return _swizzle(width, height, depth, blkWidth, blkHeight, blkDepth, roundPitch, bpp, tileMode, size_range, bytes(data), 1)
+def swizzle(width, height, depth, blkWidth, blkHeight, blkDepth, roundPitch, bpp, tileMode, size_range, specialPad, data):
+	return _swizzle(width, height, depth, blkWidth, blkHeight, blkDepth, roundPitch, bpp, tileMode, size_range, specialPad, bytes(data), 1)
 
 
-def getAddrBlockLinear(x, y, image_width, bytes_per_pixel, base_address, block_height):
+def getAddrBlockLinear(x, y, image_width, bytes_per_pixel, base_address, block_height, specialPad):
 	"""
 	From the Tegra X1 TRM
 	"""
-	image_width_in_gobs = DIV_ROUND_UP(image_width * bytes_per_pixel, 64)
+	image_width_in_gobs = DIV_ROUND_UP(round_up(image_width, specialPad) * bytes_per_pixel, 64)
 
 	GOB_address = (base_address
 				   + (y // (8 * block_height)) * 512 * block_height * image_width_in_gobs
@@ -143,7 +145,7 @@ def getAddrBlockLinear(x, y, image_width, bytes_per_pixel, base_address, block_h
 
 	return Address
 
-def loadImageData(format: str, width: int, height: int, depth: int, arrayCount: int, mipCount: int, imageData, blockHeightLog2, target=1, linearTileMode=False):
+def loadImageData(format: str, width: int, height: int, depth: int, arrayCount: int, mipCount: int, imageData, blockHeightLog2, target=1, linearTileMode=False, specialPad=1):
 	[bpp, blkWidth, blkHeight, blkDepth] = getFormatTable(format)
 	blockHeight = DIV_ROUND_UP(height, blkHeight)
 	pitch = 0
@@ -185,7 +187,7 @@ def loadImageData(format: str, width: int, height: int, depth: int, arrayCount: 
 				try:
 					pitch = round_up(width__ * bpp, 64)
 					surfaceSize += pitch * round_up(height__, max(1, blockHeight >> blockHeightShift) * 8)
-					result = deswizzle(width, height, depth, blkWidth, blkHeight, blkDepth, target, bpp, tileMode, max(0, blockHeightLog2 - blockHeightShift), data_)
+					result = deswizzle(width, height, depth, blkWidth, blkHeight, blkDepth, target, bpp, tileMode, max(0, blockHeightLog2 - blockHeightShift), specialPad, data_)
 
 					# the program creates a copy and uses that to remove unneeded data
 					# yeah, i'm not doing that
@@ -197,7 +199,7 @@ def loadImageData(format: str, width: int, height: int, depth: int, arrayCount: 
 			arrayOffset += len(imageData) / arrayCount
 	return False
 
-def compressImageData(format: str, width: int, height: int, depth: int, arrayCount: int, mipCount: int, imageData, blockHeightLog2, target=1, linearTileMode=False):
+def compressImageData(format: str, width: int, height: int, depth: int, arrayCount: int, mipCount: int, imageData, blockHeightLog2, target=1, linearTileMode=False, specialPad=1):
 	bpp = formatTable[format][0]
 	blkWidth = formatTable[format][1]
 	blkHeight = formatTable[format][2]
@@ -242,7 +244,7 @@ def compressImageData(format: str, width: int, height: int, depth: int, arrayCou
 				try:
 					pitch = round_up(width__ * bpp, 64)
 					surfaceSize += pitch * round_up(height__, max(1, blockHeight >> blockHeightShift) * 8)
-					result = swizzle(width, height, depth, blkWidth, blkHeight, blkDepth, target, bpp, tileMode, max(0, blockHeightLog2 - blockHeightShift), data_)
+					result = swizzle(width, height, depth, blkWidth, blkHeight, blkDepth, target, bpp, tileMode, max(0, blockHeightLog2 - blockHeightShift), specialPad, data_)
 
 					# the program creates a copy and uses that to remove unneeded data
 					# yeah, i'm not doing that
